@@ -23,7 +23,7 @@ async def addbalance_command(update: Update, context: ContextTypes.DEFAULT_TYPE,
     # 调试日志：检查管理员 ID
     logger.info(f"addbalance 命令: 发起者 {user_id}, 管理员 {ADMIN_USER_ID}")
 
-    if user_id != ADMIN_USER_ID:
+    if str(user_id) != str(ADMIN_USER_ID):
         await update.message.reply_text("您没有权限使用此命令。")
         logger.warning(f"未授权的 addbalance 尝试: 用户 {user_id}")
         return
