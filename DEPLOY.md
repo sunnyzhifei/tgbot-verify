@@ -129,7 +129,7 @@ CREATE DATABASE tgbot_verify CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
 检查 Bot Token 是否正确：
 ```bash
-docker-compose logs | grep "Bot Token"
+docker compose logs | grep "Bot Token"
 ```
 
 ### 2. 数据库连接失败
@@ -162,8 +162,8 @@ docker-compose logs -f --tail=100
 git pull
 
 # 重启服务
-docker-compose down
-docker-compose up -d --build
+docker compose down
+docker compose up -d --build
 ```
 
 ---
