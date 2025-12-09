@@ -40,26 +40,30 @@ async def addbalance_command(update: Update, context: ContextTypes.DEFAULT_TYPE,
         
         logger.info(f"addbalance: 开始处理 - 目标用户: {target_user_id}, 金额: {amount}")
 
-        # 检查用户是否存在
-        if not db.user_exists(target_user_id):
-            await update.message.reply_text("❌ 用户不存在。")
-            logger.info(f"addbalance: 目标用户 {target_user_id} 不存在")
-            return
+        try:
+            # 检查用户是否存在
+            if not db.user_exists(target_user_id):
+                await update.message.reply_text("❌ 用户不存在。")
+                logger.info(f"addbalance: 目标用户 {target_user_id} 不存在")
+                return
 
-        # 增加积分
-        if db.add_balance(target_user_id, amount):
-            user = db.get_user(target_user_id)
-            if user:
-                await update.message.reply_text(
-                    f"✅ 成功为用户 {target_user_id} 增加 {amount} 积分。\n"
-                    f"当前积分：{user['balance']}"
-                )
-                logger.info(f"addbalance: 成功为用户 {target_user_id} 增加 {amount} 积分")
+            # 增加积分
+            if db.add_balance(target_user_id, amount):
+                user = db.get_user(target_user_id)
+                if user:
+                    await update.message.reply_text(
+                        f"✅ 成功为用户 {target_user_id} 增加 {amount} 积分。\n"
+                        f"当前积分：{user['balance']}"
+                    )
+                    logger.info(f"addbalance: 成功为用户 {target_user_id} 增加 {amount} 积分")
+                else:
+                    await update.message.reply_text(f"✅ 积分已增加，但无法获取用户信息。")
             else:
-                await update.message.reply_text(f"✅ 积分已增加，但无法获取用户信息。")
-        else:
-            await update.message.reply_text("❌ 操作失败，请检查日志或重试。")
-            logger.error(f"addbalance: 为用户 {target_user_id} 增加积分失败")
+                await update.message.reply_text("❌ 操作失败，请检查日志或重试。")
+                logger.error(f"addbalance: 为用户 {target_user_id} 增加积分失败")
+        except Exception as db_error:
+            logger.error(f"addbalance: 数据库操作出错 - {type(db_error).__name__}: {db_error}", exc_info=True)
+            await update.message.reply_text(f"❌ 数据库操作出错: {type(db_error).__name__}: {str(db_error)[:100]}")
             
     except ValueError as e:
         await update.message.reply_text("❌ 参数格式错误，请输入有效的数字。\n示例: /addbalance 123456789 10")
