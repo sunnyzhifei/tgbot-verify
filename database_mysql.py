@@ -33,7 +33,16 @@ class MySQLDatabase:
 
     def get_connection(self):
         """获取数据库连接"""
-        return pymysql.connect(**self.config)
+        try:
+            conn = pymysql.connect(**self.config)
+            logger.debug(f"数据库连接成功")
+            return conn
+        except pymysql.OperationalError as e:
+            logger.error(f"数据库连接失败 - 连接错误: {e}")
+            raise
+        except Exception as e:
+            logger.error(f"数据库连接失败 - 未知错误: {e}")
+            raise
 
     def init_database(self):
         """初始化数据库表结构"""
@@ -184,10 +193,11 @@ class MySQLDatabase:
 
     def get_user(self, user_id: int) -> Optional[Dict]:
         """获取用户信息"""
-        conn = self.get_connection()
-        cursor = conn.cursor(DictCursor)
-
+        conn = None
+        cursor = None
         try:
+            conn = self.get_connection()
+            cursor = conn.cursor(DictCursor)
             cursor.execute("SELECT * FROM users WHERE user_id = %s", (user_id,))
             row = cursor.fetchone()
             
@@ -200,53 +210,76 @@ class MySQLDatabase:
                     result['last_checkin'] = result['last_checkin'].isoformat()
                 return result
             return None
-
+        except Exception as e:
+            logger.error(f"get_user({user_id}) 失败: {e}", exc_info=True)
+            return None
         finally:
-            cursor.close()
-            conn.close()
+            if cursor:
+                cursor.close()
+            if conn:
+                conn.close()
 
     def user_exists(self, user_id: int) -> bool:
         """检查用户是否存在"""
-        return self.get_user(user_id) is not None
+        try:
+            user = self.get_user(user_id)
+            return user is not None
+        except Exception as e:
+            logger.error(f"user_exists({user_id}) 失败: {e}", exc_info=True)
+            return False
 
     def is_user_blocked(self, user_id: int) -> bool:
         """检查用户是否被拉黑"""
-        user = self.get_user(user_id)
-        return user and user["is_blocked"] == 1
+        try:
+            user = self.get_user(user_id)
+            return user and user["is_blocked"] == 1
+        except Exception as e:
+            logger.error(f"is_user_blocked({user_id}) 失败: {e}", exc_info=True)
+            return False
 
     def block_user(self, user_id: int) -> bool:
         """拉黑用户"""
-        conn = self.get_connection()
-        cursor = conn.cursor()
-
+        conn = None
+        cursor = None
         try:
+            conn = self.get_connection()
+            cursor = conn.cursor()
             cursor.execute("UPDATE users SET is_blocked = 1 WHERE user_id = %s", (user_id,))
             conn.commit()
+            logger.info(f"block_user: 拉黑用户 {user_id}")
             return True
         except Exception as e:
-            logger.error(f"拉黑用户失败: {e}")
-            conn.rollback()
+            logger.error(f"block_user({user_id}) 失败: {e}", exc_info=True)
+            if conn:
+                conn.rollback()
             return False
         finally:
-            cursor.close()
-            conn.close()
+            if cursor:
+                cursor.close()
+            if conn:
+                conn.close()
 
     def unblock_user(self, user_id: int) -> bool:
         """取消拉黑用户"""
-        conn = self.get_connection()
-        cursor = conn.cursor()
-
+        conn = None
+        cursor = None
         try:
+            conn = self.get_connection()
+            cursor = conn.cursor()
             cursor.execute("UPDATE users SET is_blocked = 0 WHERE user_id = %s", (user_id,))
             conn.commit()
+            logger.info(f"unblock_user: 取消拉黑用户 {user_id}")
             return True
         except Exception as e:
-            logger.error(f"取消拉黑失败: {e}")
-            conn.rollback()
+            logger.error(f"unblock_user({user_id}) 失败: {e}", exc_info=True)
+            if conn:
+                conn.rollback()
             return False
         finally:
-            cursor.close()
-            conn.close()
+            if cursor:
+                cursor.close()
+            if conn:
+                conn.close()
 
     def get_blacklist(self) -> List[Dict]:
         """获取黑名单列表"""
@@ -262,23 +295,28 @@ class MySQLDatabase:
 
     def add_balance(self, user_id: int, amount: int) -> bool:
         """增加用户积分"""
-        conn = self.get_connection()
-        cursor = conn.cursor()
-
+        conn = None
+        cursor = None
         try:
+            conn = self.get_connection()
+            cursor = conn.cursor()
             cursor.execute(
                 "UPDATE users SET balance = balance + %s WHERE user_id = %s",
                 (amount, user_id),
             )
             conn.commit()
+            logger.info(f"add_balance: 成功为用户 {user_id} 增加 {amount} 积分")
             return True
         except Exception as e:
-            logger.error(f"增加积分失败: {e}")
-            conn.rollback()
+            logger.error(f"add_balance({user_id}, {amount}) 失败: {e}", exc_info=True)
+            if conn:
+                conn.rollback()
             return False
         finally:
-            cursor.close()
-            conn.close()
+            if cursor:
+                cursor.close()
+            if conn:
+                conn.close()
 
     def deduct_balance(self, user_id: int, amount: int) -> bool:
         """扣除用户积分"""

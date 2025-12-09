@@ -19,9 +19,13 @@ async def addbalance_command(update: Update, context: ContextTypes.DEFAULT_TYPE,
         return
 
     user_id = update.effective_user.id
+    
+    # 调试日志：检查管理员 ID
+    logger.info(f"addbalance 命令: 发起者 {user_id}, 管理员 {ADMIN_USER_ID}")
 
     if user_id != ADMIN_USER_ID:
         await update.message.reply_text("您没有权限使用此命令。")
+        logger.warning(f"未授权的 addbalance 尝试: 用户 {user_id}")
         return
 
     if not context.args or len(context.args) < 2:
@@ -33,21 +37,36 @@ async def addbalance_command(update: Update, context: ContextTypes.DEFAULT_TYPE,
     try:
         target_user_id = int(context.args[0])
         amount = int(context.args[1])
+        
+        logger.info(f"addbalance: 开始处理 - 目标用户: {target_user_id}, 金额: {amount}")
 
+        # 检查用户是否存在
         if not db.user_exists(target_user_id):
-            await update.message.reply_text("用户不存在。")
+            await update.message.reply_text("❌ 用户不存在。")
+            logger.info(f"addbalance: 目标用户 {target_user_id} 不存在")
             return
 
+        # 增加积分
         if db.add_balance(target_user_id, amount):
             user = db.get_user(target_user_id)
-            await update.message.reply_text(
-                f"✅ 成功为用户 {target_user_id} 增加 {amount} 积分。\n"
-                f"当前积分：{user['balance']}"
-            )
+            if user:
+                await update.message.reply_text(
+                    f"✅ 成功为用户 {target_user_id} 增加 {amount} 积分。\n"
+                    f"当前积分：{user['balance']}"
+                )
+                logger.info(f"addbalance: 成功为用户 {target_user_id} 增加 {amount} 积分")
+            else:
+                await update.message.reply_text(f"✅ 积分已增加，但无法获取用户信息。")
         else:
-            await update.message.reply_text("操作失败，请稍后重试。")
-    except ValueError:
-        await update.message.reply_text("参数格式错误，请输入有效的数字。")
+            await update.message.reply_text("❌ 操作失败，请检查日志或重试。")
+            logger.error(f"addbalance: 为用户 {target_user_id} 增加积分失败")
+            
+    except ValueError as e:
+        await update.message.reply_text("❌ 参数格式错误，请输入有效的数字。\n示例: /addbalance 123456789 10")
+        logger.error(f"addbalance: 参数格式错误 - {e}")
+    except Exception as e:
+        logger.error(f"addbalance: 处理过程出错 - {e}", exc_info=True)
+        await update.message.reply_text(f"❌ 处理过程出错: {type(e).__name__}: {str(e)}\n\n请检查日志或联系开发者。")
 
 
 async def block_command(update: Update, context: ContextTypes.DEFAULT_TYPE, db: Database):
@@ -76,10 +95,14 @@ async def block_command(update: Update, context: ContextTypes.DEFAULT_TYPE, db: 
 
         if db.block_user(target_user_id):
             await update.message.reply_text(f"✅ 已拉黑用户 {target_user_id}。")
+            logger.info(f"block: 拉黑用户 {target_user_id}")
         else:
             await update.message.reply_text("操作失败，请稍后重试。")
     except ValueError:
         await update.message.reply_text("参数格式错误，请输入有效的用户ID。")
+    except Exception as e:
+        logger.error(f"block: 处理过程出错 - {e}", exc_info=True)
+        await update.message.reply_text(f"❌ 处理过程出错: {str(e)}")
 
 
 async def white_command(update: Update, context: ContextTypes.DEFAULT_TYPE, db: Database):
@@ -108,10 +131,14 @@ async def white_command(update: Update, context: ContextTypes.DEFAULT_TYPE, db: 
 
         if db.unblock_user(target_user_id):
             await update.message.reply_text(f"✅ 已将用户 {target_user_id} 移出黑名单。")
+            logger.info(f"white: 取消拉黑用户 {target_user_id}")
         else:
             await update.message.reply_text("操作失败，请稍后重试。")
     except ValueError:
         await update.message.reply_text("参数格式错误，请输入有效的用户ID。")
+    except Exception as e:
+        logger.error(f"white: 处理过程出错 - {e}", exc_info=True)
+        await update.message.reply_text(f"❌ 处理过程出错: {str(e)}")
 
 
 async def blacklist_command(update: Update, context: ContextTypes.DEFAULT_TYPE, db: Database):
