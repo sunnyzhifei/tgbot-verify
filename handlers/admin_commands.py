@@ -29,9 +29,14 @@ async def addbalance_command(update: Update, context: ContextTypes.DEFAULT_TYPE,
         return
 
     if not context.args or len(context.args) < 2:
-        await update.message.reply_text(
-            "使用方法: /addbalance <用户ID> <积分数量>\n\n示例: /addbalance 123456789 10"
+        # 使用 HTML 格式，<code> 标签内的内容点击会自动复制
+        usage_text = (
+            "⚠️ <b>参数缺失</b>\n\n"
+            "请按以下格式输入（点击下方命令可复制模版）：\n\n"
+            "<code>/addbalance 123456789 10</code>\n"
+            "👆 <i>点击上面，修改 ID 和 金额 即可</i>"
         )
+        await update.message.reply_text(usage_text, parse_mode='HTML')
         return
 
     try:

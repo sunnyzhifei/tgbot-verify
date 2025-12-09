@@ -98,14 +98,14 @@ def get_insufficient_balance_message(current_balance: int) -> str:
 
 
 def get_verify_usage_message(command: str, service_name: str) -> str:
-    """获取验证命令使用说明"""
+    """
+    获取验证命令使用说明
+    使用了 <code> 标签，用户点击代码块即可复制
+    """
     return (
-        f"使用方法: {command} <SheerID链接>\n\n"
-        "示例:\n"
-        f"{command} https://services.sheerid.com/verify/xxx/?verificationId=xxx\n\n"
-        "获取验证链接:\n"
-        f"1. 访问 {service_name} 认证页面\n"
-        "2. 开始认证流程\n"
-        "3. 复制浏览器地址栏中的完整 URL\n"
-        f"4. 使用 {command} 命令提交"
+        f"🔗 <b>请提供 {service_name} 认证链接</b>\n\n"
+        "<b>使用方法：</b>\n"
+        "点击下方文字复制模版，然后在后面粘贴您的链接：\n\n"
+        f"<code>{command} https://services.sheerid.com/verify/...</code>\n\n"
+        "<i>(提示：请确保链接包含 verificationId 参数)</i>"
     )

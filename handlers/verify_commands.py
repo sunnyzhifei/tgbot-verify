@@ -40,7 +40,7 @@ async def verify_command(update: Update, context: ContextTypes.DEFAULT_TYPE, db:
 
     if not context.args:
         await update.message.reply_text(
-            get_verify_usage_message("/verify", "Gemini One Pro")
+            get_verify_usage_message("/verify", "Gemini One Pro"), parse_mode='HTML'
         )
         return
 
@@ -116,7 +116,7 @@ async def verify2_command(update: Update, context: ContextTypes.DEFAULT_TYPE, db
 
     if not context.args:
         await update.message.reply_text(
-            get_verify_usage_message("/verify2", "ChatGPT Teacher K12")
+            get_verify_usage_message("/verify2", "ChatGPT Teacher K12"), parse_mode='HTML'
         )
         return
 
@@ -192,7 +192,7 @@ async def verify4_command(update: Update, context: ContextTypes.DEFAULT_TYPE, db
 
     if not context.args:
         await update.message.reply_text(
-            get_verify_usage_message("/verify4", "Bolt.new Teacher")
+            get_verify_usage_message("/verify4", "Bolt.new Teacher"), parse_mode='HTML'
         )
         return
 
