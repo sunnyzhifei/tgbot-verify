@@ -17,3 +17,7 @@ REGISTER_REWARD = 1  # 注册奖励积分
 
 # 帮助链接
 HELP_NOTION_URL = "https://rhetorical-era-3f3.notion.site/dd78531dbac745af9bbac156b51da9cc"
+
+# 网络配置
+# 支持 http://, https://, socks5://
+PROXY_URL = os.getenv("PROXY_URL", None)

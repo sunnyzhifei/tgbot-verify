@@ -9,6 +9,7 @@ from telegram import Update
 from telegram.ext import ContextTypes
 
 from config import VERIFY_COST
+import config # 导入整个config以访问PROXY_URL
 from database_mysql import Database
 from one.sheerid_verifier import SheerIDVerifier as OneVerifier
 from k12.sheerid_verifier import SheerIDVerifier as K12Verifier
@@ -87,6 +88,39 @@ async def verify_command(update: Update, context: ContextTypes.DEFAULT_TYPE, db:
             if result.get("redirect_url"):
                 result_msg += f"跳转链接：\n{result['redirect_url']}"
             await processing_msg.edit_text(result_msg)
+
+            # 如果是等待审核状态，开始轮询
+            if result.get("pending"):
+                await processing_msg.edit_text(
+                    f"✅ 文档已提交！\n"
+                    f"📋 验证ID: `{verification_id}`\n\n"
+                    f"⏳ 正在自动监听审核状态（最多等待20分钟）...\n"
+                )
+
+                # 轮询状态
+                poll_result = await _poll_verification_status(verification_id, max_wait=1200)
+
+                if poll_result["status"] == "success":
+                    success_msg = "🎉 恭喜！审核已通过！\n\n"
+                    if poll_result.get("redirect_url"):
+                        success_msg += f"🔗 跳转链接：\n{poll_result['redirect_url']}\n\n"
+                    if poll_result.get("reward_code"):
+                        success_msg += f"🎁 兑换码：`{poll_result['reward_code']}`"
+
+                    await processing_msg.edit_text(success_msg)
+
+                elif poll_result["status"] == "error":
+                    error_msg = f"❌ 审核未通过\n\n原因：{poll_result.get('message', '不符合要求')}\n\n建议检查文档清晰度或资质是否符合。"
+                    await processing_msg.edit_text(error_msg)
+
+                else: # timeout
+                    timeout_msg = (
+                        f"✅ 文档已提交，仍在审核中。\n\n"
+                        f"由于审核时间较长，请稍后留意邮件或手动查看。\n"
+                        f"验证ID: `{verification_id}`"
+                    )
+                    await processing_msg.edit_text(timeout_msg)
+
         else:
             db.add_balance(user_id, VERIFY_COST)
             await processing_msg.edit_text(
@@ -100,6 +134,52 @@ async def verify_command(update: Update, context: ContextTypes.DEFAULT_TYPE, db:
             f"❌ 处理过程中出现错误：{str(e)}\n\n"
             f"已退回 {VERIFY_COST} 积分"
         )
+
+
+async def _poll_verification_status(
+    verification_id: str,
+    max_wait: int = 1200,
+    interval: int = 5
+) -> dict:
+    """轮询 SheerID 验证状态"""
+    import time
+    start_time = time.time()
+
+    async with httpx.AsyncClient(timeout=30.0, proxies=config.PROXY_URL) as client:
+        while True:
+            elapsed = int(time.time() - start_time)
+
+            if elapsed >= max_wait:
+                return {"status": "pending", "message": "Timeout"}
+
+            try: 
+                response = await client.get(
+                    f"https://my.sheerid.com/rest/v2/verification/{verification_id}"
+                ) 
+
+                if response.status_code == 200:
+                    data = response.json()
+                    current_step = data.get("currentStep")
+
+                    if current_step == "success":
+                        return {
+                            "status": "success",
+                            "message": "Verification successful",
+                            "redirect_url": data.get("redirectUrl"),
+                            "reward_code": data.get("rewardCode") or data.get("rewardData", {}).get("rewardCode")
+                        }
+                    elif current_step == "error":
+                        error_ids = data.get("errorIds", [])
+                        return {
+                            "status": "error",
+                            "message": ", ".join(error_ids) if error_ids else "Unknown error"
+                        }
+
+                await asyncio.sleep(interval)
+
+            except Exception as e:
+                logger.warning(f"轮询状态出错: {e}")
+                await asyncio.sleep(interval)
 
 
 async def verify2_command(update: Update, context: ContextTypes.DEFAULT_TYPE, db: Database):
@@ -332,7 +412,7 @@ async def _auto_get_reward_code(
     start_time = time.time()
     attempts = 0
     
-    async with httpx.AsyncClient(timeout=30.0) as client:
+    async with httpx.AsyncClient(timeout=30.0, proxies=config.PROXY_URL) as client:
         while True:
             elapsed = int(time.time() - start_time)
             attempts += 1

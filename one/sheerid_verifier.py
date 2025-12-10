@@ -24,7 +24,13 @@ class SheerIDVerifier:
     def __init__(self, verification_id: str):
         self.verification_id = verification_id
         self.device_fingerprint = self._generate_device_fingerprint()
-        self.http_client = httpx.Client(timeout=30.0)
+        
+        # 配置代理
+        proxies = None
+        if config.PROXY_URL:
+            proxies = config.PROXY_URL
+            
+        self.http_client = httpx.Client(timeout=30.0, proxies=proxies)
 
     def __del__(self):
         if hasattr(self, "http_client"):
