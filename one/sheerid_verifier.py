@@ -161,7 +161,12 @@ class SheerIDVerifier:
 
             # 生成学生证 PNG
             logger.info("步骤 1/4: 生成学生证 PNG...")
-            img_data = generate_image(first_name, last_name, school_id)
+            img_data = generate_image(
+                first_name, 
+                last_name, 
+                school_name=school['name'],
+                birth_date=birth_date
+            )
             file_size = len(img_data)
             logger.info(f"✅ PNG 大小: {file_size / 1024:.2f}KB")
 

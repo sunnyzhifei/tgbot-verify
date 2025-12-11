@@ -74,8 +74,21 @@ UNIVERSITY_DATA = {
     ]
 }
 
-# 默认头像 (Dicebear Adventurer)
-DEFAULT_AVATAR_TEMPLATE = "https://api.dicebear.com/7.x/adventurer/svg?seed={}"
+# 默认头像 (使用 RandomUser.me 获取真人头像)
+# 注意：RandomUser 提供的是真实人脸素材，更适合 ID 卡
+# 为了保证男女比例平衡，可以随机选择性别
+def get_random_avatar_url(gender=None):
+    """获取随机真人头像 URL"""
+    # 随机性别
+    if not gender:
+        gender = random.choice(["men", "women"])
+    
+    # RandomUser.me 提供了几十张男女头像，ID范围 0-99
+    # 例如: https://randomuser.me/api/portraits/men/1.jpg
+    img_id = random.randint(0, 99)
+    return f"https://randomuser.me/api/portraits/{gender}/{img_id}.jpg"
+
+# DEFAULT_AVATAR_TEMPLATE 已弃用，改用动态生成
 
 def get_random_university():
     """随机获取一个大学配置 (仅限美国)"""
@@ -94,17 +107,28 @@ def generate_student_id():
     rand_suffix = random.randint(10000, 99999)
     return f"{year}{rand_suffix}"
 
-def generate_dates():
-    """生成相关日期 (DOB, Issued, Valid Thru)"""
+def generate_dates(birth_date_str=None):
+    """生成相关日期 (DOB, Issued, Valid Thru)
+    Args:
+        birth_date_str: 生日字符串，格式 YYYY-MM-DD (SheerID格式)
+    """
     now = datetime.now()
     
-    # 年龄 18-26
-    age = 18 + random.randint(0, 8)
-    dob_year = now.year - age
-    dob = datetime(dob_year, random.randint(1, 12), random.randint(1, 28))
+    if birth_date_str:
+        # 解析传入的生日 (YYYY-MM-DD -> datetime)
+        try:
+            dob = datetime.strptime(birth_date_str, "%Y-%m-%d")
+        except ValueError:
+            # Fallback if format is wrong
+            dob = datetime(2000, 1, 1)
+    else:
+        # Fallback random
+        age = 18 + random.randint(0, 8)
+        dob_year = now.year - age
+        dob = datetime(dob_year, random.randint(1, 12), random.randint(1, 28))
     
     # 入学年份 (DOB + 18)
-    enrollment_year = dob_year + 18
+    enrollment_year = dob.year + 18
     # 签发日期 (入学当年随机)
     issued = datetime(enrollment_year, random.randint(1, 12), random.randint(1, 28))
     
@@ -112,26 +136,57 @@ def generate_dates():
     valid_thru = datetime(issued.year + 4, issued.month, issued.day)
     
     return {
-        "dob": dob.strftime("%d/%m/%Y"),
+        "dob": dob.strftime("%d/%m/%Y"), # 图片显示格式 DD/MM/YYYY
         "issued": issued.strftime("%d/%m/%Y"),
         "valid_thru": valid_thru.strftime("%d/%m/%Y")
     }
 
-def generate_html(first_name: str, last_name: str, photo_url: str = None) -> str:
-    """生成学生证 HTML (完全复刻前端)"""
+def generate_html(first_name: str, last_name: str, photo_url: str = None, university_name: str = None, birth_date: str = None) -> str:
+    """生成学生证 HTML (完全复刻前端)
+    Args:
+        first_name: 名
+        last_name: 姓
+        photo_url: 头像URL
+        university_name: 学校名称 (用于匹配)
+        birth_date: 生日 (YYYY-MM-DD)
+    """
     
-    uni = get_random_university()
+    # 尝试匹配传入的学校名称，如果匹配不到则随机 (但也必须是 USA)
+    uni = None
+    if university_name:
+        for u in UNIVERSITY_DATA.get("USA", []):
+            # 简单模糊匹配或精确匹配
+            if u["name"].lower() == university_name.lower() or u["shortName"].lower() == university_name.lower():
+                uni = u
+                break
+    
+    if not uni:
+        # 如果没找到匹配的配置，或者没传，就随机给一个 (注意：这可能导致不一致，但在 verifier 调用时应确保能匹配)
+        # 即使没匹配到配置，也可以根据传入的 university_name 动态构造一个基础配置
+        if university_name:
+            uni = {
+                 "name": university_name,
+                 "shortName": "".join([w[0] for w in university_name.split() if w[0].isupper()]), # 简单的缩写生成
+                 "color": "#003366", # 默认深蓝
+                 "layout": "horizontal",
+                 "logo": "https://upload.wikimedia.org/wikipedia/commons/e/e8/Education%2C_Studying%2C_University%2C_Alumni_-_icon.png", # 通用Logo
+                 "majors": ["Information Technology", "Computer Science"]
+            }
+        else:
+            uni = get_random_university()
+
     full_name = f"{first_name} {last_name}"
     
     # 数据生成
     student_id = generate_student_id()
-    dates = generate_dates()
+    dates = generate_dates(birth_date)
     major = random.choice(uni["majors"]) if "majors" in uni else "Information Technology"
     
     # 处理头像
     if not photo_url:
-        seed = full_name.replace(" ", "")
-        photo_url = DEFAULT_AVATAR_TEMPLATE.format(seed)
+        # 尝试根据名字猜测性别有点复杂，这里随机选择
+        # 如果需要更严谨，可以引入 gender_guesser，但 random 对假资料也够用了
+        photo_url = get_random_avatar_url()
 
     # 样式定义 (从 style.css 和 JS 内联样式提取)
     css = """
@@ -412,19 +467,25 @@ def generate_html(first_name: str, last_name: str, photo_url: str = None) -> str
     return html
 
 
-def generate_image(first_name, last_name, school_id=None):
+def generate_image(first_name, last_name, school_name=None, birth_date=None, **kwargs):
     """
     生成学生证图片
     
     Args:
         first_name: 名字
         last_name: 姓氏
-        school_id: (已弃用，随机选择) 
+        school_name: 学校全名 (用于选择模板)
+        birth_date: 生日字符串 (YYYY-MM-DD)
     """
     try:
         from playwright.sync_api import sync_playwright
 
-        html_content = generate_html(first_name, last_name)
+        html_content = generate_html(
+            first_name, 
+            last_name, 
+            university_name=school_name,
+            birth_date=birth_date
+        )
 
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=True)
@@ -452,7 +513,34 @@ def generate_psu_email(first_name, last_name):
 
 if __name__ == '__main__':
     # 测试生成的代码
-    data = generate_image("Alex", "Chen")
-    with open("test_new_card.png", "wb") as f:
-        f.write(data)
-    print("Test card generated: test_new_card.png")
+    import os
+    print("Testing Image Generator...")
+    
+    # 测试数据
+    test_first = "Alice"
+    test_last = "Wonderland"
+    test_school = "Stanford University"
+    test_dob = "2002-05-20"
+    
+    print(f"Generating ID Card for:")
+    print(f"Name: {test_first} {test_last}")
+    print(f"School: {test_school}")
+    print(f"DOB: {test_dob}")
+    
+    try:
+        data = generate_image(
+            test_first, 
+            test_last, 
+            school_name=test_school,
+            birth_date=test_dob
+        )
+        
+        output_file = "test_stanford_card.png"
+        with open(output_file, "wb") as f:
+            f.write(data)
+            
+        print(f"✅ Success! Generated image saved to: {os.path.abspath(output_file)}")
+        print("Please open the image to verify: Name, School Logo, DOB, and Realistic Avatar.")
+        
+    except Exception as e:
+        print(f"❌ Failed: {e}")
