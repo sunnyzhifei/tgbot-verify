@@ -20,4 +20,5 @@ HELP_NOTION_URL = "https://rhetorical-era-3f3.notion.site/dd78531dbac745af9bbac1
 
 # 网络配置
 # 支持 http://, https://, socks5://
-PROXY_URL = os.getenv("PROXY_URL", None)
+# PROXY_URL = os.getenv("PROXY_URL", None)
+PROXY_URL = os.getenv("PROXY_URL", "socks5://127.0.0.1:10086")

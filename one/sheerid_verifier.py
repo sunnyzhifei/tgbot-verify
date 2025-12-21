@@ -26,12 +26,11 @@ class SheerIDVerifier:
         self.device_fingerprint = self._generate_device_fingerprint()
         
         # 配置代理
-        proxies = None
         if config.PROXY_URL:
-            proxies = config.PROXY_URL
-            
-        self.http_client = httpx.Client(timeout=30.0, proxies=proxies)
-
+            self.http_client = httpx.Client(timeout=30.0, proxy=config.PROXY_URL)
+        else:
+            self.http_client = httpx.Client(timeout=30.0)
+    
     def __del__(self):
         if hasattr(self, "http_client"):
             self.http_client.close()
@@ -114,152 +113,160 @@ class SheerIDVerifier:
             logger.error(f"S3 上传失败: {e}")
             return False
 
-    def verify(
+    def submit_student_info(
         self,
-        first_name: str = None,
-        last_name: str = None,
-        email: str = None,
-        birth_date: str = None,
-        school_id: str = None,
+        first_name: str,
+        last_name: str,
+        email: str,
+        birth_date: str,
+        school_id: str,
         hcaptcha_token: str = None,
-        turnstile_token: str = None,
+        turnstile_token: str = None
     ) -> Dict:
-        """执行验证流程，移除状态轮询以减少耗时"""
-        try:
-            current_step = "initial"
+        """步骤 1: 提交学生个人信息并初始化验证会话"""
+        if config.HCAPTCHA_SECRET:
+            logger.info("验证 hCaptcha...")
+            if not self.verify_hcaptcha(hcaptcha_token):
+                raise Exception("hCaptcha 验证失败")
+            logger.info("✅ hCaptcha 验证成功")
 
-            if config.HCAPTCHA_SECRET:
-                logger.info("验证 hCaptcha...")
-                if not self.verify_hcaptcha(hcaptcha_token):
-                    raise Exception("hCaptcha 验证失败")
-                logger.info("✅ hCaptcha 验证成功")
+        if config.TURNSTILE_SECRET:
+            logger.info("验证 Turnstile...")
+            if not self.verify_turnstile(turnstile_token):
+                raise Exception("Turnstile 验证失败")
+            logger.info("✅ Turnstile 验证成功")
 
-            if config.TURNSTILE_SECRET:
-                logger.info("验证 Turnstile...")
-                if not self.verify_turnstile(turnstile_token):
-                    raise Exception("Turnstile 验证失败")
-                logger.info("✅ Turnstile 验证成功")
+        school = config.SCHOOLS[school_id]
+        logger.info(f"正在提交学生信息: {first_name} {last_name} ({email})")
+        
+        step2_body = {
+            "firstName": first_name,
+            "lastName": last_name,
+            "birthDate": birth_date,
+            "email": email,
+            "phoneNumber": "",
+            "organization": {
+                "id": int(school_id),
+                "idExtended": school["idExtended"],
+                "name": school["name"],
+            },
+            "deviceFingerprintHash": self.device_fingerprint,
+            "locale": "zh",
+            "metadata": {
+                "marketConsentValue": False,
+                "refererUrl": f"{config.SHEERID_BASE_URL}/verify/{config.PROGRAM_ID}/?verificationId={self.verification_id}",
+                "verificationId": self.verification_id,
+                "flags": '{"doc-upload-considerations":"default","doc-upload-may24":"default","doc-upload-redesign-use-legacy-message-keys":false,"docUpload-assertion-checklist":"default","include-cvec-field-france-student":"not-labeled-optional","org-search-overlay":"default","org-selected-display":"default"}',
+                "submissionOptIn": "提交上述个人信息即表示，本人知悉并同意 SheerID 将其披露、传输及存储在中国大陆境外，用于对本人的身份验证。关于 SheerID 的更多信息。",
+            },
+        }
 
-            if not first_name or not last_name:
-                name = NameGenerator.generate()
-                first_name = name["first_name"]
-                last_name = name["last_name"]
+        step2_data, step2_status = self._sheerid_request(
+            "POST",
+            f"{config.SHEERID_BASE_URL}/rest/v2/verification/{self.verification_id}/step/collectStudentPersonalInfo",
+            step2_body,
+        )
 
-            school_id = school_id or config.DEFAULT_SCHOOL_ID
+        if step2_status != 200:
+            raise Exception(f"提交学生信息失败 (状态码 {step2_status}): {step2_data}")
+        if step2_data.get("currentStep") == "error":
+            error_msg = ", ".join(step2_data.get("errorIds", ["Unknown error"]))
+            raise Exception(f"提交学生信息错误: {error_msg}")
+
+        logger.info(f"✅ 学生信息提交成功, 当前步骤: {step2_data.get('currentStep')}")
+        
+        # 处理 SSO 状态
+        if step2_data.get("currentStep") in ["sso", "collectStudentPersonalInfo"]:
+            logger.info("正在跳过 SSO 验证...")
+            step3_data, _ = self._sheerid_request(
+                "DELETE",
+                f"{config.SHEERID_BASE_URL}/rest/v2/verification/{self.verification_id}/step/sso",
+            )
+            return step3_data
+            
+        return step2_data
+
+    def upload_documents(self, document_list: list) -> Dict:
+        """步骤 2: 上传证件材料 (Admission Letter, Transcript, etc.)"""
+        if not document_list:
+            raise Exception("未提供要上传的文档列表")
+
+        logger.info(f"准备上传 {len(document_list)} 个证件文档...")
+
+        # 构造请求体，限制最多3个文件
+        files_meta = []
+        for doc in document_list[:3]:
+            files_meta.append({
+                "fileName": doc["name"],
+                "mimeType": "image/png",
+                "fileSize": len(doc["data"])
+            })
+
+        step4_data, step4_status = self._sheerid_request(
+            "POST",
+            f"{config.SHEERID_BASE_URL}/rest/v2/verification/{self.verification_id}/step/docUpload",
+            {"files": files_meta}
+        )
+
+        if not step4_data.get("documents"):
+            raise Exception(f"未能获取上传 URL: {step4_data}")
+
+        # 逐个上传到 S3
+        for i, remote_doc in enumerate(step4_data["documents"]):
+            upload_url = remote_doc["uploadUrl"]
+            local_data = document_list[i]["data"]
+            logger.info(f"正在上传 {document_list[i]['name']} ({i+1}/{len(document_list)})...")
+            if not self._upload_to_s3(upload_url, local_data):
+                raise Exception(f"文档 {document_list[i]['name']} 上传失败")
+        
+        logger.info("✅ 所有文档上传成功，正在确认订单...")
+
+        # 完成上传
+        step6_data, _ = self._sheerid_request(
+            "POST",
+            f"{config.SHEERID_BASE_URL}/rest/v2/verification/{self.verification_id}/step/completeDocUpload",
+        )
+        logger.info(f"✅ 证件提交完成，进入审核阶段")
+        
+        return {
+            "success": True,
+            "pending": True,
+            "message": "文档已提交，等待审核",
+            "verification_id": self.verification_id,
+            "redirect_url": step6_data.get("redirectUrl"),
+            "status": step6_data,
+        }
+
+    def verify(self, **kwargs) -> Dict:
+        """兼容旧版本的统一验证接口"""
+        first_name = kwargs.get("first_name")
+        last_name = kwargs.get("last_name")
+        if not first_name or not last_name:
+            name = NameGenerator.generate()
+            first_name = name["first_name"]
+            last_name = name["last_name"]
+
+        school_id = kwargs.get("school_id") or config.DEFAULT_SCHOOL_ID
+        email = kwargs.get("email") or generate_psu_email(first_name, last_name)
+        birth_date = kwargs.get("birth_date") or generate_birth_date()
+
+        info_res = self.submit_student_info(
+            first_name, last_name, email, birth_date, school_id,
+            hcaptcha_token=kwargs.get("hcaptcha_token"),
+            turnstile_token=kwargs.get("turnstile_token")
+        )
+
+        if info_res.get("currentStep") != "docUpload":
+            return {"success": False, "message": f"状态异常: {info_res.get('currentStep')}", "status": info_res}
+
+        # 准备文档
+        document_list = kwargs.get("document_list")
+        if not document_list:
             school = config.SCHOOLS[school_id]
+            img_data = generate_image(first_name, last_name, school_name=school['name'], birth_date=birth_date)
+            document_list = [{"name": "student_card.png", "data": img_data}]
 
-            if not email:
-                email = generate_psu_email(first_name, last_name)
-            if not birth_date:
-                birth_date = generate_birth_date()
-
-            logger.info(f"学生信息: {first_name} {last_name}")
-            logger.info(f"邮箱: {email}")
-            logger.info(f"学校: {school['name']}")
-            logger.info(f"生日: {birth_date}")
-            logger.info(f"验证 ID: {self.verification_id}")
-
-            # 生成学生证 PNG
-            logger.info("步骤 1/4: 生成学生证 PNG...")
-            img_data = generate_image(
-                first_name, 
-                last_name, 
-                school_name=school['name'],
-                birth_date=birth_date
-            )
-            file_size = len(img_data)
-            logger.info(f"✅ PNG 大小: {file_size / 1024:.2f}KB")
-
-            # 提交学生信息
-            logger.info("步骤 2/4: 提交学生信息...")
-            step2_body = {
-                "firstName": first_name,
-                "lastName": last_name,
-                "birthDate": birth_date,
-                "email": email,
-                "phoneNumber": "",
-                "organization": {
-                    "id": int(school_id),
-                    "idExtended": school["idExtended"],
-                    "name": school["name"],
-                },
-                "deviceFingerprintHash": self.device_fingerprint,
-                "locale": "en-US",
-                "metadata": {
-                    "marketConsentValue": False,
-                    "refererUrl": f"{config.SHEERID_BASE_URL}/verify/{config.PROGRAM_ID}/?verificationId={self.verification_id}",
-                    "verificationId": self.verification_id,
-                    "flags": '{"collect-info-step-email-first":"default","doc-upload-considerations":"default","doc-upload-may24":"default","doc-upload-redesign-use-legacy-message-keys":false,"docUpload-assertion-checklist":"default","font-size":"default","include-cvec-field-france-student":"not-labeled-optional"}',
-                    "submissionOptIn": "By submitting the personal information above, I acknowledge that my personal information is being collected under the privacy policy of the business from which I am seeking a discount",
-                },
-            }
-
-            step2_data, step2_status = self._sheerid_request(
-                "POST",
-                f"{config.SHEERID_BASE_URL}/rest/v2/verification/{self.verification_id}/step/collectStudentPersonalInfo",
-                step2_body,
-            )
-
-            if step2_status != 200:
-                raise Exception(f"步骤 2 失败 (状态码 {step2_status}): {step2_data}")
-            if step2_data.get("currentStep") == "error":
-                error_msg = ", ".join(step2_data.get("errorIds", ["Unknown error"]))
-                raise Exception(f"步骤 2 错误: {error_msg}")
-
-            logger.info(f"✅ 步骤 2 完成: {step2_data.get('currentStep')}")
-            current_step = step2_data.get("currentStep", current_step)
-
-            # 跳过 SSO（如需要）
-            if current_step in ["sso", "collectStudentPersonalInfo"]:
-                logger.info("步骤 3/4: 跳过 SSO 验证...")
-                step3_data, _ = self._sheerid_request(
-                    "DELETE",
-                    f"{config.SHEERID_BASE_URL}/rest/v2/verification/{self.verification_id}/step/sso",
-                )
-                logger.info(f"✅ 步骤 3 完成: {step3_data.get('currentStep')}")
-                current_step = step3_data.get("currentStep", current_step)
-
-            # 上传文档并完成提交
-            logger.info("步骤 4/4: 请求并上传文档...")
-            step4_body = {
-                "files": [
-                    {"fileName": "student_card.png", "mimeType": "image/png", "fileSize": file_size}
-                ]
-            }
-            step4_data, step4_status = self._sheerid_request(
-                "POST",
-                f"{config.SHEERID_BASE_URL}/rest/v2/verification/{self.verification_id}/step/docUpload",
-                step4_body,
-            )
-            if not step4_data.get("documents"):
-                raise Exception("未能获取上传 URL")
-
-            upload_url = step4_data["documents"][0]["uploadUrl"]
-            logger.info("✅ 获取上传 URL 成功")
-            if not self._upload_to_s3(upload_url, img_data):
-                raise Exception("S3 上传失败")
-            logger.info("✅ 学生证上传成功")
-
-            step6_data, _ = self._sheerid_request(
-                "POST",
-                f"{config.SHEERID_BASE_URL}/rest/v2/verification/{self.verification_id}/step/completeDocUpload",
-            )
-            logger.info(f"✅ 文档提交完成: {step6_data.get('currentStep')}")
-            final_status = step6_data
-
-            # 不做状态轮询，直接返回等待审核
-            return {
-                "success": True,
-                "pending": True,
-                "message": "文档已提交，等待审核",
-                "verification_id": self.verification_id,
-                "redirect_url": final_status.get("redirectUrl"),
-                "status": final_status,
-            }
-
-        except Exception as e:
-            logger.error(f"❌ 验证失败: {e}")
-            return {"success": False, "message": str(e), "verification_id": self.verification_id}
+        return self.upload_documents(document_list)
 
 
 def main():

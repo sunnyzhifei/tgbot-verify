@@ -1,8 +1,14 @@
-"""通用学生证生成模块 (复刻 student-card-generator)"""
 import random
 import base64
+import os
 from datetime import datetime
 from typing import Dict, Any
+
+# 尝试引用 AcaGenProvider 以共享学校数据
+try:
+    from .acagen_provider import AcaGenProvider
+except ImportError:
+    AcaGenProvider = None
 
 # 嵌入的大学数据 (源自 student-card-generator/js/universities.js)
 UNIVERSITY_DATA = {
@@ -109,31 +115,41 @@ def generate_student_id():
 
 def generate_dates(birth_date_str=None):
     """生成相关日期 (DOB, Issued, Valid Thru)
-    Args:
-        birth_date_str: 生日字符串，格式 YYYY-MM-DD (SheerID格式)
+    闭环逻辑：以 API 提交的生日为基准，确保证件当前在有效期内且至少还有一年过期。
     """
     now = datetime.now()
     
+    # 0. 确定生日 (Source of Truth)
     if birth_date_str:
-        # 解析传入的生日 (YYYY-MM-DD -> datetime)
         try:
             dob = datetime.strptime(birth_date_str, "%Y-%m-%d")
         except ValueError:
-            # Fallback if format is wrong
-            dob = datetime(2000, 1, 1)
+            dob = datetime(2002, 1, 1)
     else:
-        # Fallback random
-        age = 18 + random.randint(0, 8)
-        dob_year = now.year - age
+        # 只有在没有传入时才随机，确保 20-25 岁
+        dob_year = now.year - random.randint(20, 25)
         dob = datetime(dob_year, random.randint(1, 12), random.randint(1, 28))
+
+    # 1. 计算默认毕业年份 (按 18 岁入学 + 4 年学制 = 22 岁毕业)
+    default_exit_year = dob.year + 22
     
-    # 入学年份 (DOB + 18)
-    enrollment_year = dob.year + 18
-    # 签发日期 (入学当年随机)
-    issued = datetime(enrollment_year, random.randint(1, 12), random.randint(1, 28))
+    # 2. 闭环修正：如果按 18 岁算已经毕业了，或者即将毕业（不满一年）
+    # 我们将其模拟为“在读研究生”或者“晚入学的本科生”
+    if default_exit_year < now.year + 1:
+        # 强制有效期在未来 1.5 - 2.5 年后
+        valid_thru_year = now.year + random.randint(1, 2)
+    else:
+        # 如果还没毕业，就按正常的 22 岁毕业逻辑
+        valid_thru_year = default_exit_year
+
+    # 3. 细化有效期 (设置为毕业月 5/6 月)
+    valid_thru_month = 5 if random.random() > 0.5 else 6
+    valid_thru_day = random.randint(15, 30)
+    valid_thru = datetime(valid_thru_year, valid_thru_month, valid_thru_day)
     
-    # 有效期 (签发 + 4年)
-    valid_thru = datetime(issued.year + 4, issued.month, issued.day)
+    # 4. 签发日期 (Issued): 有效期前推 4 年，固定在秋季 8/9 月入学
+    issued_year = valid_thru.year - 4
+    issued = datetime(issued_year, random.randint(8, 9), random.randint(1, 28))
     
     return {
         "dob": dob.strftime("%d/%m/%Y"), # 图片显示格式 DD/MM/YYYY
@@ -141,28 +157,61 @@ def generate_dates(birth_date_str=None):
         "valid_thru": valid_thru.strftime("%d/%m/%Y")
     }
 
-def generate_html(first_name: str, last_name: str, photo_url: str = None, university_name: str = None, birth_date: str = None) -> str:
-    """生成学生证 HTML (完全复刻前端)
+def _get_logo_base64(logo_name):
+    """从 assets/logos 读取并返回 base64"""
+    if not logo_name or logo_name.startswith("http"):
+        return logo_name
+        
+    logo_path = os.path.join(os.path.dirname(__file__), "assets", "logos", logo_name)
+    if os.path.exists(logo_path):
+        try:
+            ext = os.path.splitext(logo_name)[1].lower().replace('.', '')
+            mime = 'image/svg+xml' if ext == 'svg' else f'image/{ext}'
+            with open(logo_path, "rb") as f:
+                encoded = base64.b64encode(f.read()).decode('utf-8')
+                return f"data:{mime};base64,{encoded}"
+        except Exception:
+            return logo_name
+    return logo_name
+
+def generate_html(first_name: str, last_name: str, photo_url: str = None, university_name: str = None, birth_date: str = None, **kwargs) -> str:
+    """生成学生证 HTML (完全复刻 AcaGen 设计)
     Args:
         first_name: 名
         last_name: 姓
         photo_url: 头像URL
         university_name: 学校名称 (用于匹配)
         birth_date: 生日 (YYYY-MM-DD)
+        **kwargs: 包含 studentId, major, college 等额外字段
     """
     
-    # 尝试匹配传入的学校名称，如果匹配不到则随机 (但也必须是 USA)
+    # 1. 尝试从 AcaGenProvider 匹配
     uni = None
-    if university_name:
+    if AcaGenProvider and university_name:
+        for u in AcaGenProvider.UNIVERSITIES:
+            if u["name"].lower() == university_name.lower() or u["short"].lower() == university_name.lower():
+                # 转换为 img_generator 兼容格式
+                uni = {
+                    "name": u["name"],
+                    "shortName": u["short"],
+                    "domain": u["domain"],
+                    "logo": _get_logo_base64(u["logo"]),
+                    "color": "#1e3a8a", # 默认蓝色
+                    "layout": "horizontal",
+                    "majors": ["Computer Science", "Engineering", "Business"]
+                }
+                break
+    
+    # 2. 如果没匹配到，尝试匹配内置 UNIVERSITY_DATA
+    if not uni and university_name:
         for u in UNIVERSITY_DATA.get("USA", []):
-            # 简单模糊匹配或精确匹配
             if u["name"].lower() == university_name.lower() or u["shortName"].lower() == university_name.lower():
-                uni = u
+                uni = u.copy()
                 break
     
     if not uni:
         # 如果没找到匹配的配置，或者没传，就随机给一个 (注意：这可能导致不一致，但在 verifier 调用时应确保能匹配)
-        # 即使没匹配到配置，也可以根据传入的 university_name 动态构造一个基础配置
+        # 即使没匹配到配置，也可以根据传入 accessor 的 university_name 动态构造一个基础配置
         if university_name:
             uni = {
                  "name": university_name,
@@ -178,240 +227,179 @@ def generate_html(first_name: str, last_name: str, photo_url: str = None, univer
     full_name = f"{first_name} {last_name}"
     
     # 数据生成
-    student_id = generate_student_id()
+    student_id = kwargs.get("studentId", "047794-7940") if kwargs else generate_student_id()
     dates = generate_dates(birth_date)
-    major = random.choice(uni["majors"]) if "majors" in uni else "Information Technology"
+    major = kwargs.get("major", "College of Business") if kwargs else random.choice(uni["majors"])
+    college = kwargs.get("college", f"McCoy {major}") if kwargs else f"{major}"
     
     # 处理头像
     if not photo_url:
-        # 尝试根据名字猜测性别有点复杂，这里随机选择
-        # 如果需要更严谨，可以引入 gender_guesser，但 random 对假资料也够用了
         photo_url = get_random_avatar_url()
 
-    # 样式定义 (从 style.css 和 JS 内联样式提取)
-    css = """
+    # 样式定义 (精确复刻 AcaGen 截图)
+    css = f"""
     <style>
-        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
         
-        body {
+        body {{
             margin: 0;
             padding: 0;
             background-color: transparent;
-            font-family: 'Inter', sans-serif;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif;
             display: flex;
             justify-content: center;
             align-items: center;
             height: 100vh;
-        }
+        }}
 
-        .id-card {
-            width: 480px; /* 略微放大以便截图清晰 */
-            height: 300px;
-            background: #fff;
-            border-radius: 16px;
-            box-shadow: 0 10px 30px rgba(0,0,0,0.15);
-            overflow: hidden;
-            position: relative;
-            display: flex;
-            flex-direction: column;
-        }
-
-        /* 垂直布局 */
-        .id-card.vertical-card {
-            width: 300px;
+        .id-card {{
+            width: 750px;
             height: 480px;
-        }
-
-        .glass-overlay {
-            position: absolute;
-            top: 0; left: 0; right: 0; bottom: 0;
-            background: linear-gradient(135deg, rgba(255,255,255,0.4) 0%, rgba(255,255,255,0) 100%);
-            pointer-events: none;
-            z-index: 2;
-        }
-
-        .card-header {
-            padding: 20px;
+            background-color: white;
+            border-radius: 24px;
+            box-shadow: 0 20px 50px rgba(0,0,0,0.1);
+            overflow: hidden;
             display: flex;
-            align-items: center;
+            flex-direction: column;
+            position: relative;
+        }}
+
+        .header {{
+            background: #FBBF24; /* AcaGen 橙黄色 Header */
             color: white;
-            position: relative;
-            z-index: 1;
-        }
-
-        .vertical-card .card-header {
-            flex-direction: column;
-            text-align: center;
-            padding-bottom: 30px;
-        }
-
-        .university-logo {
-            width: 60px;
-            height: 60px;
-            object-fit: contain;
-            background: rgba(255,255,255,0.9);
-            border-radius: 50%;
-            padding: 5px;
-            margin-right: 15px;
-            box-shadow: 0 4px 10px rgba(0,0,0,0.1);
-        }
-
-        .vertical-card .university-logo {
-            margin-right: 0;
-            margin-bottom: 10px;
-            width: 70px;
-            height: 70px;
-        }
-
-        .university-info {
-            flex: 1;
-        }
-
-        .university-name {
-            font-size: 20px;
-            font-weight: 800;
-            margin: 0;
-            line-height: 1.2;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-        }
-
-        .university-full-name {
-            font-size: 10px;
-            opacity: 0.9;
-            margin: 4px 0 0 0;
-            font-weight: 400;
-        }
-
-        .card-content {
-            flex: 1;
-            padding: 20px;
+            padding: 0 30px;
             display: flex;
-            gap: 20px;
-            background: #fff;
-            position: relative;
-            z-index: 1;
             align-items: center;
-        }
-
-        .vertical-card .card-content {
-            flex-direction: column;
-            text-align: center;
-            padding-top: 5px;
-        }
-
-        .photo-container {
+            gap: 22px;
+            height: 135px;
             flex-shrink: 0;
-        }
+        }}
 
-        .student-photo {
-            width: 100px;
-            height: 120px;
-            object-fit: cover;
-            border-radius: 8px;
-            border: 3px solid #f0f0f0;
-            box-shadow: 0 4px 8px rgba(0,0,0,0.1);
-        }
-
-        .vertical-card .student-photo {
-            width: 110px;
-            height: 110px;
+        .logo-container {{
+            width: 112px;
+            height: 112px;
+            background: white;
             border-radius: 50%;
-            border: 4px solid #fff;
-            box-shadow: 0 4px 15px rgba(0,0,0,0.15);
-            margin-top: -50px; /* Pull up into header */
-            position: relative;
-            z-index: 3;
-            background: #fff;
-        }
-
-        .student-info {
-            flex: 1;
             display: flex;
-            flex-direction: column;
-            justify-content: center;
-            gap: 6px;
-            width: 100%;
-        }
-
-        .info-row {
-            display: flex;
-            font-size: 11px;
-            border-bottom: 1px solid #f5f5f5;
-            padding-bottom: 3px;
-        }
-
-        .vertical-card .info-row {
-            justify-content: space-between;
-        }
-
-        .label {
-            color: #888;
-            font-weight: 600;
-            width: 75px;
-        }
-
-        .value {
-            color: #333;
-            font-weight: 500;
-            flex: 1;
-        }
-        
-        .id-number {
-            font-family: 'Courier New', monospace;
-            font-weight: 700;
-            letter-spacing: 1px;
-            color: #000;
-        }
-
-        .card-footer {
-            padding: 15px 20px;
-            border-top: 1px solid #eee;
-            display: flex;
-            justify-content: space-between;
             align-items: center;
-            background: #fcfcfc;
-        }
+            justify-content: center;
+            overflow: hidden;
+            box-shadow: 0 4px 10px rgba(0,0,0,0.1);
+        }}
 
-        .signature {
+        .logo-img {{
+            width: 90px;
+            height: 90px;
+            object-fit: contain;
+        }}
+
+        .uni-info {{
+            flex: 1;
+        }}
+
+        .uni-name {{
+            font-size: 40px;
+            font-weight: 700;
+            margin: 0;
+            line-height: 1.1;
+        }}
+
+        .card-type {{
+            font-size: 18px;
+            text-transform: uppercase;
+            opacity: 1;
+            margin-top: 5px;
+            letter-spacing: 1px;
+            font-weight: 500;
+        }}
+
+        .body {{
+            flex: 1;
+            padding: 30px;
+            display: flex;
+            gap: 30px;
+            background: #fdfdfd;
+        }}
+
+        .photo-box {{
+            width: 150px;
+            height: 190px;
+            background: #e5e7eb;
+            border-radius: 12px;
+            overflow: hidden;
+            border: 1px solid #e5e7eb;
+            flex-shrink: 0;
+            margin-top: 10px;
+        }}
+
+        .student-photo {{
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+        }}
+
+        .info-panel {{
+            flex: 1;
             display: flex;
             flex-direction: column;
-        }
+            justify-content: space-between;
+            padding: 10px 0;
+        }}
 
-        .signature-text {
-            font-family: 'Brush Script MT', cursive;
-            font-size: 20px;
-            color: #000;
-        }
+        .field {{
+            margin-bottom: 5px;
+        }}
 
-        .signature-label {
-            font-size: 8px;
+        .label {{
+            font-size: 15px;
             color: #999;
             text-transform: uppercase;
-        }
+            letter-spacing: 0.5px;
+            font-weight: 500;
+            margin-bottom: 2px;
+        }}
 
-        .barcode {
+        .value {{
+            font-size: 28px;
+            font-weight: 600;
+            color: #333;
+        }}
+
+        .footer {{
+            height: 90px;
+            padding: 0 40px;
+            background: white;
             display: flex;
-            flex-direction: column;
-            align-items: flex-end;
-        }
+            justify-content: space-between;
+            align-items: center;
+            border-top: 1px solid #f3f3f3;
+        }}
 
-        .barcode-svg {
-            height: 25px;
-            width: 100px;
-            opacity: 0.7;
-        }
-        
-        .barcode-number {
-            font-size: 9px;
-            color: #555;
-            font-family: monospace;
-            letter-spacing: 2px;
-        }
+        .footer-item {{
+            text-align: left;
+        }}
+
+        .footer-item.right {{
+            text-align: right;
+        }}
+
+        .footer-label {{
+            font-size: 13px;
+            color: #999;
+            text-transform: uppercase;
+            font-weight: 500;
+            margin-bottom: 3px;
+        }}
+
+        .footer-value {{
+            font-size: 20px;
+            font-weight: 600;
+            color: #333;
+        }}
     </style>
     """
 
-    # 构建 HTML
+    # 构建 HTML (按截图字段顺序: NAME -> STUDENT ID -> FACULTY)
     html = f"""
     <!DOCTYPE html>
     <html lang="en">
@@ -420,44 +408,48 @@ def generate_html(first_name: str, last_name: str, photo_url: str = None, univer
         {css}
     </head>
     <body>
-        <div class="id-card {uni['layout']}-card" style="border-top: 4px solid {uni['color']}">
-            <div class="glass-overlay"></div>
-            
-            <!-- Header -->
-            <div class="card-header" style="background: linear-gradient(135deg, {uni['color']}, {uni['color']}dd)">
-                <img src="{uni['logo']}" alt="Logo" class="university-logo">
-                <div class="university-info">
-                    <h2 class="university-name">{uni['shortName']}</h2>
-                    <p class="university-full-name">{uni['name']}</p>
+        <div class="id-card">
+            <!-- Header Section -->
+            <div class="header">
+                <div class="logo-container">
+                    <img src="{uni['logo']}" class="logo-img">
+                </div>
+                <div class="uni-info">
+                    <div class="uni-name">{uni['name']}</div>
+                    <div class="card-type">International Student ID Card</div>
                 </div>
             </div>
             
-            <!-- Content -->
-            <div class="card-content">
-                <div class="photo-container">
-                    <img src="{photo_url}" alt="Student Photo" class="student-photo">
+            <!-- Body Section -->
+            <div class="body">
+                <div class="photo-box">
+                    <img src="{photo_url}" class="student-photo">
                 </div>
-                <div class="student-info">
-                    <div class="info-row"><span class="label">Full Name:</span><span class="value">{full_name}</span></div>
-                    <div class="info-row"><span class="label">Student ID:</span><span class="value id-number">{student_id}</span></div>
-                    <div class="info-row"><span class="label">DOB:</span><span class="value">{dates['dob']}</span></div>
-                    <div class="info-row"><span class="label">Major:</span><span class="value">{major}</span></div>
-                    <div class="info-row"><span class="label">Issued:</span><span class="value">{dates['issued']}</span></div>
-                    <div class="info-row"><span class="label">Valid Thru:</span><span class="value">{dates['valid_thru']}</span></div>
+                <div class="info-panel">
+                    <div class="field">
+                        <div class="label">NAME</div>
+                        <div class="value">{full_name}</div>
+                    </div>
+                    <div class="field">
+                        <div class="label">STUDENT ID</div>
+                        <div class="value" style="font-family: inherit;">{student_id}</div>
+                    </div>
+                    <div class="field">
+                        <div class="label">FACULTY</div>
+                        <div class="value">{college}</div>
+                    </div>
                 </div>
             </div>
             
-            <!-- Footer -->
-            <div class="card-footer">
-                <div class="signature">
-                    <span class="signature-text">{full_name}</span>
-                    <span class="signature-label">Student Signature</span>
+            <!-- Footer Section -->
+            <div class="footer">
+                <div class="footer-item">
+                    <div class="footer-label">ISSUE DATE</div>
+                    <div class="footer-value">{dates['issued']}</div>
                 </div>
-                <div class="barcode">
-                    <svg viewBox="0 0 120 40" class="barcode-svg">
-                       <rect x="0" y="0" width="4" height="40" fill="#000"/><rect x="6" y="0" width="2" height="40" fill="#000"/><rect x="10" y="0" width="4" height="40" fill="#000"/><rect x="16" y="0" width="2" height="40" fill="#000"/><rect x="20" y="0" width="6" height="40" fill="#000"/><rect x="28" y="0" width="2" height="40" fill="#000"/><rect x="32" y="0" width="4" height="40" fill="#000"/><rect x="38" y="0" width="2" height="40" fill="#000"/><rect x="42" y="0" width="4" height="40" fill="#000"/><rect x="48" y="0" width="6" height="40" fill="#000"/><rect x="56" y="0" width="2" height="40" fill="#000"/><rect x="60" y="0" width="4" height="40" fill="#000"/><rect x="66" y="0" width="2" height="40" fill="#000"/><rect x="70" y="0" width="6" height="40" fill="#000"/><rect x="78" y="0" width="2" height="40" fill="#000"/><rect x="82" y="0" width="4" height="40" fill="#000"/><rect x="88" y="0" width="2" height="40" fill="#000"/><rect x="92" y="0" width="4" height="40" fill="#000"/><rect x="98" y="0" width="6" height="40" fill="#000"/><rect x="106" y="0" width="2" height="40" fill="#000"/><rect x="110" y="0" width="4" height="40" fill="#000"/><rect x="116" y="0" width="2" height="40" fill="#000"/>
-                    </svg>
-                    <span class="barcode-number">{student_id}</span>
+                <div class="footer-item right">
+                    <div class="footer-label">VALID UNTIL</div>
+                    <div class="footer-value">{dates['valid_thru']}</div>
                 </div>
             </div>
         </div>
@@ -484,7 +476,8 @@ def generate_image(first_name, last_name, school_name=None, birth_date=None, **k
             first_name, 
             last_name, 
             university_name=school_name,
-            birth_date=birth_date
+            birth_date=birth_date,
+            **kwargs
         )
 
         with sync_playwright() as p:
@@ -519,7 +512,7 @@ if __name__ == '__main__':
     # 测试数据
     test_first = "Alice"
     test_last = "Wonderland"
-    test_school = "Stanford University"
+    test_school = "Massachusetts Institute of Technology"
     test_dob = "2002-05-20"
     
     print(f"Generating ID Card for:")
@@ -535,12 +528,12 @@ if __name__ == '__main__':
             birth_date=test_dob
         )
         
-        output_file = "test_stanford_card.png"
+        output_file = f"test_{test_school.lower().replace(' ', '_')}.png"
         with open(output_file, "wb") as f:
             f.write(data)
             
-        print(f"✅ Success! Generated image saved to: {os.path.abspath(output_file)}")
+        print(f"Success! Generated image saved to: {os.path.abspath(output_file)}")
         print("Please open the image to verify: Name, School Logo, DOB, and Realistic Avatar.")
         
     except Exception as e:
-        print(f"❌ Failed: {e}")
+        print(f"Failed: {e}")

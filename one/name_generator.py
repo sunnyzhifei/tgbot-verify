@@ -102,12 +102,13 @@ def generate_email(school_domain='MIT.EDU'):
 
 def generate_birth_date():
     """
-    生成随机生日（2000-2005年）
+    生成随机生日（2002-2006年）
+    针对 2025 年，确保学生年龄在 19-23 岁之间。
     
     Returns:
         str: YYYY-MM-DD 格式的日期
     """
-    year = 2000 + random.randint(0, 5)
+    year = 2002 + random.randint(0, 4)
     month = str(random.randint(1, 12)).zfill(2)
     day = str(random.randint(1, 28)).zfill(2)
     return f"{year}-{month}-{day}"
